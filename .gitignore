@@ -1,0 +1,46 @@
+# Dependencies
+node_modules/
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.venv/
+
+# Database
+*.db
+database.db
+
+# Environment
+.env
+.env.local
+.env*.local
+
+# Next.js
+.next/
+out/
+
+# Build
+dist/
+build/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Uploads
+backend/data/uploads/*
+!backend/data/uploads/.gitkeep
+
+# Logs
+*.log
+npm-debug.log*
+
+# Original data
+backend/data/youtube_data_original.csv

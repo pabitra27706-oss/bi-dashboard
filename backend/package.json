@@ -1,0 +1,6 @@
+{
+  "dependencies": {
+    "framer-motion": "^12.36.0",
+    "html-to-image": "^1.11.13"
+  }
+}
