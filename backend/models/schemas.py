@@ -1,3 +1,4 @@
+from datetime import datetime
 from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any, Union
 
@@ -5,6 +6,7 @@ from typing import Optional, List, Dict, Any, Union
 class QueryRequest(BaseModel):
     query: str = Field(..., min_length=3, max_length=1000)
     conversation_history: List[Dict[str, Any]] = Field(default_factory=list)
+    active_table: Optional[str] = None
 
 
 class Annotation(BaseModel):
@@ -46,12 +48,57 @@ class QueryResponse(BaseModel):
     follow_up_questions: List[str] = Field(default_factory=list)
     execution_time: float = 0.0
     error: Optional[str] = None
+    cache_hit: bool = False
+    timestamp: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    confidence: Optional[str] = None
+    assumptions: List[str] = Field(default_factory=list)
+    is_modification: bool = False
 
 
 class SchemaResponse(BaseModel):
     tables: List[Dict[str, Any]]
     row_count: int
+    timestamp: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
 
 
 class SuggestionResponse(BaseModel):
     suggestions: List[Dict[str, Any]]
+    timestamp: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+
+
+class TableInfo(BaseModel):
+    name: str
+    row_count: int = 0
+    column_count: int = 0
+    columns: List[Dict[str, str]] = Field(default_factory=list)
+    is_active: bool = False
+
+
+class TablesResponse(BaseModel):
+    tables: List[TableInfo] = Field(default_factory=list)
+    active_table: str = "youtube_data"
+    timestamp: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+
+
+class ActiveTableRequest(BaseModel):
+    table_name: str
+
+
+class UploadResponse(BaseModel):
+    success: bool = True
+    table_name: str = ""
+    schema_info: Optional[Dict[str, Any]] = None
+    error: Optional[str] = None
+    suggested_questions: List[str] = Field(default_factory=list)
+    timestamp: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+
+
+class UploadPreviewResponse(BaseModel):
+    success: bool = True
+    file_name: str = ""
+    file_size: int = 0
+    row_count: int = 0
+    columns: List[Dict[str, str]] = Field(default_factory=list)
+    sample_rows: List[Dict[str, Any]] = Field(default_factory=list)
+    error: Optional[str] = None
+    timestamp: str = Field(default_factory=lambda: datetime.utcnow().isoformat())

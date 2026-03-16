@@ -1,145 +1,380 @@
 import os
 import time
+import hashlib
 import traceback
-from fastapi import APIRouter, UploadFile, File, Form
+from datetime import datetime
+from typing import Dict, Any, Optional, List
+
+from fastapi import APIRouter, UploadFile, File, Form, Request, HTTPException
+
 from models.schemas import (
     QueryRequest, QueryResponse, ChartConfig, KPI,
     SchemaResponse, SuggestionResponse, Annotation,
+    TablesResponse, TableInfo, ActiveTableRequest,
+    UploadResponse, UploadPreviewResponse,
 )
-from services.prompt_builder import build_prompt
+from services.prompt_builder import build_prompt, build_modification_prompt, build_fix_prompt
 from services.gemini_service import query_gemini
 from services.db_service import (
-    execute_query, execute_kpi_sql, get_schema, load_csv_to_db, validate_sql,
+    execute_query, execute_kpi_sql, get_schema, load_csv_to_db,
+    validate_sql, table_exists, drop_table, preview_csv,
+    validate_sql_columns, profile_table, generate_starter_questions,
 )
+from services.conversation_handler import (
+    is_conversational, get_conversational_response,
+    is_modification_request, get_chart_type_from_modification,
+)
+from config import settings, limiter
+from services.logger import logger
 
 router = APIRouter(prefix="/api")
 
+_active_table: str = settings.DEFAULT_TABLE
+_cache: Dict[str, Dict[str, Any]] = {}
+CACHE_TTL = settings.CACHE_TTL
 
-@router.post("/query", response_model=QueryResponse)
-def process_query(req: QueryRequest):
-    t0 = time.perf_counter()
-    try:
-        prompt = build_prompt(req.query, req.conversation_history)
-        gemini_result = query_gemini(prompt)
+MAX_SELF_CORRECT_RETRIES = 2
 
-        sql = gemini_result.get("sql", "")
-        if not sql:
-            return QueryResponse(
-                success=False, query=req.query,
-                error="AI did not generate a SQL query. Try rephrasing.",
-                execution_time=round(time.perf_counter() - t0, 3),
+
+# ── cache helpers ─────────────────────────────────────────────────────────
+def _cache_key(query_text: str, active_tbl: str) -> str:
+    raw = f"{query_text.strip().lower()}|{active_tbl}"
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
+def _should_skip_cache(query_text: str) -> bool:
+    q = query_text.lower()
+    return "random" in q or "sample" in q
+
+
+def _get_cached(key: str) -> Optional[QueryResponse]:
+    if key not in _cache:
+        return None
+    entry = _cache[key]
+    if time.time() - entry["ts"] > CACHE_TTL:
+        del _cache[key]
+        return None
+    return entry["resp"]
+
+
+def _put_cache(key: str, resp: QueryResponse) -> None:
+    if len(_cache) > 200:
+        oldest = sorted(_cache, key=lambda k: _cache[k]["ts"])
+        for old_key in oldest[:50]:
+            del _cache[old_key]
+    _cache[key] = {"resp": resp, "ts": time.time()}
+
+
+# ── response builder helpers ──────────────────────────────────────────────
+def _parse_chart_config(cc: Any) -> ChartConfig:
+    if not isinstance(cc, dict):
+        cc = {}
+    y_raw = cc.get("y_axis", [])
+    if isinstance(y_raw, str):
+        y_raw = [y_raw]
+    if not isinstance(y_raw, list):
+        y_raw = []
+    return ChartConfig(
+        chart_type=str(cc.get("chart_type", "bar")),
+        title=str(cc.get("title", "Query Results")),
+        x_axis=str(cc.get("x_axis", "")),
+        x_label=str(cc.get("x_label", "")),
+        y_axis=y_raw,
+        y_label=str(cc.get("y_label", "")),
+        group_by=cc.get("group_by"),
+        colors=cc.get("colors", ["#6366F1", "#8B5CF6", "#EC4899", "#F43F5E"]),
+        annotations=[
+            Annotation(**a) for a in cc.get("annotations", []) if isinstance(a, dict)
+        ],
+    )
+
+
+def _parse_additional_charts(raw: list, fallback_x: str) -> List[ChartConfig]:
+    charts = []
+    for ac in raw:
+        if not isinstance(ac, dict):
+            continue
+        ac_y = ac.get("y_axis", [])
+        if isinstance(ac_y, str):
+            ac_y = [ac_y]
+        if not isinstance(ac_y, list):
+            ac_y = []
+        charts.append(
+            ChartConfig(
+                chart_type=str(ac.get("chart_type", "bar")),
+                title=str(ac.get("title", "")),
+                x_axis=str(ac.get("x_axis", fallback_x)),
+                x_label=str(ac.get("x_label", "")),
+                y_axis=ac_y,
+                y_label=str(ac.get("y_label", "")),
+                group_by=ac.get("group_by"),
+                colors=ac.get("colors", ["#6366F1", "#8B5CF6", "#EC4899"]),
+                annotations=[
+                    Annotation(**a)
+                    for a in ac.get("annotations", [])
+                    if isinstance(a, dict)
+                ],
             )
-
-        valid, err = validate_sql(sql)
-        if not valid:
-            return QueryResponse(
-                success=False, query=req.query, sql=sql, error=f"Invalid SQL: {err}",
-                execution_time=round(time.perf_counter() - t0, 3),
-            )
-
-        data, exec_time = execute_query(sql)
-
-        cc = gemini_result.get("chart_config", {})
-        if not isinstance(cc, dict):
-            cc = {}
-
-        y_axis_raw = cc.get("y_axis", [])
-        if isinstance(y_axis_raw, str):
-            y_axis_raw = [y_axis_raw]
-        if not isinstance(y_axis_raw, list):
-            y_axis_raw = []
-
-        chart_config = ChartConfig(
-            chart_type=str(cc.get("chart_type", "bar")),
-            title=str(cc.get("title", "Query Results")),
-            x_axis=str(cc.get("x_axis", "")),
-            x_label=str(cc.get("x_label", "")),
-            y_axis=y_axis_raw,
-            y_label=str(cc.get("y_label", "")),
-            group_by=cc.get("group_by"),
-            colors=cc.get("colors", ["#6366F1", "#8B5CF6", "#EC4899", "#F43F5E"]),
-            annotations=[
-                Annotation(**a) for a in cc.get("annotations", [])
-                if isinstance(a, dict)
-            ],
         )
+    return charts
 
-        if data and not chart_config.x_axis:
-            keys = list(data[0].keys())
-            chart_config.x_axis = keys[0]
-            chart_config.y_axis = keys[1:]
 
-        additional_charts = []
-        for ac in gemini_result.get("additional_charts", []):
-            if isinstance(ac, dict):
-                ac_y = ac.get("y_axis", [])
-                if isinstance(ac_y, str):
-                    ac_y = [ac_y]
-                if not isinstance(ac_y, list):
-                    ac_y = []
-                additional_charts.append(ChartConfig(
-                    chart_type=str(ac.get("chart_type", "bar")),
-                    title=str(ac.get("title", "")),
-                    x_axis=str(ac.get("x_axis", chart_config.x_axis)),
-                    x_label=str(ac.get("x_label", "")),
-                    y_axis=ac_y,
-                    y_label=str(ac.get("y_label", "")),
-                    group_by=ac.get("group_by"),
-                    colors=ac.get("colors", ["#6366F1", "#8B5CF6", "#EC4899"]),
-                    annotations=[
-                        Annotation(**a) for a in ac.get("annotations", [])
-                        if isinstance(a, dict)
-                    ],
-                ))
-
-        kpis = []
-        for k in gemini_result.get("kpis", []):
-            if not isinstance(k, dict):
-                continue
-            try:
-                kpi_sql = k.get("sql", "")
-                if kpi_sql and isinstance(kpi_sql, str):
-                    val = execute_kpi_sql(kpi_sql)
-                else:
-                    val = k.get("value", "N/A")
-                kpis.append(KPI(
+def _parse_kpis(raw: list) -> List[KPI]:
+    kpis = []
+    for k in raw:
+        if not isinstance(k, dict):
+            continue
+        try:
+            kpi_sql = k.get("sql", "")
+            if kpi_sql and isinstance(kpi_sql, str):
+                val = execute_kpi_sql(kpi_sql)
+            else:
+                val = k.get("value", "N/A")
+            kpis.append(
+                KPI(
                     label=str(k.get("label", "Metric") or "Metric"),
                     value=str(val) if val else "N/A",
                     icon=str(k.get("icon", "bar-chart") or "bar-chart"),
                     trend=str(k["trend"]) if k.get("trend") else None,
                     trend_direction=str(k.get("trend_direction") or "neutral"),
-                ))
+                )
+            )
+        except Exception as e:
+            logger.warning(f"KPI parse error: {e}")
+    return kpis
+
+
+def _build_response_from_gemini(
+    gemini_result: dict,
+    sql: str,
+    data: List[Dict[str, Any]],
+    exec_time: float,
+    query_text: str,
+    total_time: float,
+    is_mod: bool = False,
+) -> QueryResponse:
+    chart_config = _parse_chart_config(gemini_result.get("chart_config", {}))
+
+    if data and not chart_config.x_axis:
+        keys = list(data[0].keys())
+        chart_config.x_axis = keys[0]
+        chart_config.y_axis = keys[1:]
+
+    additional = _parse_additional_charts(
+        gemini_result.get("additional_charts", []), chart_config.x_axis
+    )
+    kpis = _parse_kpis(gemini_result.get("kpis", []))
+
+    follow_ups = gemini_result.get("follow_up_questions", [])
+    if not isinstance(follow_ups, list):
+        follow_ups = []
+
+    assumptions = gemini_result.get("assumptions", [])
+    if not isinstance(assumptions, list):
+        assumptions = []
+
+    confidence = gemini_result.get("confidence")
+    if confidence and confidence not in ("high", "medium", "low"):
+        confidence = None
+
+    return QueryResponse(
+        success=True,
+        query=query_text,
+        sql=sql,
+        data=data,
+        chart_config=chart_config,
+        additional_charts=additional,
+        insight=str(gemini_result.get("insight", "")),
+        kpis=kpis,
+        follow_up_questions=follow_ups,
+        execution_time=round(total_time, 3),
+        cache_hit=False,
+        confidence=confidence,
+        assumptions=assumptions,
+        is_modification=is_mod,
+    )
+
+
+# ── UPDATE 5: agentic self-correction ─────────────────────────────────────
+def _execute_with_self_correction(
+    sql: str,
+    user_query: str,
+    active: str,
+    gemini_result: dict,
+    t0: float,
+) -> QueryResponse:
+    """Try to execute *sql*. On failure, ask Gemini to fix it up to N times."""
+    last_error = ""
+
+    for attempt in range(MAX_SELF_CORRECT_RETRIES + 1):
+        try:
+            # Column validation
+            col_ok, col_err, valid_cols = validate_sql_columns(sql, active)
+            if not col_ok:
+                raise ValueError(col_err)
+
+            data, exec_time = execute_query(sql)
+            return _build_response_from_gemini(
+                gemini_result, sql, data, exec_time, user_query,
+                time.perf_counter() - t0,
+            )
+
+        except Exception as e:
+            last_error = str(e)
+            if attempt < MAX_SELF_CORRECT_RETRIES:
+                logger.warning(
+                    f"SQL failed (attempt {attempt + 1}): {last_error}. "
+                    "Asking Gemini to fix..."
+                )
+                try:
+                    fix_prompt = build_fix_prompt(
+                        user_query, sql, last_error, active_table=active
+                    )
+                    fixed = query_gemini(fix_prompt)
+                    new_sql = fixed.get("sql", "")
+                    if new_sql and new_sql != sql:
+                        valid, verr = validate_sql(new_sql)
+                        if valid:
+                            sql = new_sql
+                            gemini_result = fixed
+                            logger.info(f"Self-corrected SQL (attempt {attempt + 1})")
+                            continue
+                except Exception as fix_err:
+                    logger.warning(f"Self-correction call failed: {fix_err}")
+            break
+
+    # All retries exhausted
+    return QueryResponse(
+        success=False,
+        query=user_query,
+        sql=sql,
+        error=f"Query failed after {MAX_SELF_CORRECT_RETRIES + 1} attempts: {last_error}",
+        execution_time=round(time.perf_counter() - t0, 3),
+    )
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# ENDPOINTS
+# ══════════════════════════════════════════════════════════════════════════
+
+@router.post("/query", response_model=QueryResponse)
+@limiter.limit(settings.QUERY_RATE_LIMIT)
+def process_query(req: QueryRequest, request: Request):
+    global _active_table
+    t0 = time.perf_counter()
+    active = req.active_table or _active_table or settings.DEFAULT_TABLE
+    logger.info(f"Query: '{req.query[:80]}' | table={active}")
+
+    # ── 1. conversational shortcut ────────────────────────────────────────
+    if is_conversational(req.query):
+        conv = get_conversational_response(req.query)
+        if conv:
+            logger.info("Conversational response (no Gemini call)")
+            return QueryResponse(
+                success=True, query=req.query, sql="", data=[],
+                chart_config=None, additional_charts=[],
+                insight=conv["insight"], kpis=[],
+                follow_up_questions=conv.get("follow_up_questions", []),
+                execution_time=round(time.perf_counter() - t0, 3),
+                cache_hit=False,
+            )
+
+    # ── 2. modification detection (UPDATE 6) ──────────────────────────────
+    is_mod = False
+    if req.conversation_history and is_modification_request(req.query):
+        is_mod = True
+        # Pure chart-type switch can be handled client-side; here we handle
+        # SQL-level modifications by using build_modification_prompt.
+        prev = req.conversation_history[-1] if req.conversation_history else {}
+        prev_sql = prev.get("sql", "")
+        prev_chart = prev.get("chart_config")
+
+        if prev_sql:
+            logger.info("Detected modification request — using modification prompt")
+            try:
+                prompt = build_modification_prompt(
+                    req.query, prev_sql, prev_chart, active_table=active
+                )
+                gemini_result = query_gemini(prompt)
+                sql = gemini_result.get("sql", "")
+                if sql:
+                    valid, err = validate_sql(sql)
+                    if not valid:
+                        return QueryResponse(
+                            success=False, query=req.query, sql=sql,
+                            error=f"Invalid SQL: {err}",
+                            execution_time=round(time.perf_counter() - t0, 3),
+                        )
+                    resp = _execute_with_self_correction(
+                        sql, req.query, active, gemini_result, t0
+                    )
+                    resp.is_modification = True
+                    return resp
             except Exception as e:
-                print(f"KPI parse error: {e}")
-                continue
+                logger.warning(f"Modification prompt failed, falling through: {e}")
+                is_mod = False  # fall through to normal path
 
-        follow_ups = gemini_result.get("follow_up_questions", [])
-        if not isinstance(follow_ups, list):
-            follow_ups = []
+    # ── 3. cache lookup ───────────────────────────────────────────────────
+    skip_cache = _should_skip_cache(req.query)
+    cache_key = _cache_key(req.query, active)
+    if not skip_cache:
+        cached = _get_cached(cache_key)
+        if cached is not None:
+            logger.info("Cache HIT")
+            copy = cached.model_copy()
+            copy.cache_hit = True
+            copy.timestamp = datetime.utcnow().isoformat()
+            return copy
 
-        return QueryResponse(
-            success=True,
-            query=req.query,
-            sql=sql,
-            data=data,
-            chart_config=chart_config,
-            additional_charts=additional_charts,
-            insight=str(gemini_result.get("insight", "")),
-            kpis=kpis,
-            follow_up_questions=follow_ups,
-            execution_time=round(time.perf_counter() - t0, 3),
+    # ── 4. normal Gemini flow ─────────────────────────────────────────────
+    try:
+        prompt = build_prompt(
+            req.query, req.conversation_history, active_table=active
         )
+        gemini_result = query_gemini(prompt)
+        sql = gemini_result.get("sql", "")
+
+        if not sql:
+            # Gemini said "data not available" — relay the insight
+            return QueryResponse(
+                success=True, query=req.query, sql="",
+                data=[], chart_config=None, additional_charts=[],
+                insight=str(gemini_result.get("insight", "I could not generate a query for that. Try rephrasing.")),
+                kpis=[], follow_up_questions=gemini_result.get("follow_up_questions", []),
+                execution_time=round(time.perf_counter() - t0, 3),
+                confidence=gemini_result.get("confidence"),
+                assumptions=gemini_result.get("assumptions", []),
+            )
+
+        valid, err = validate_sql(sql)
+        if not valid:
+            return QueryResponse(
+                success=False, query=req.query, sql=sql,
+                error=f"Invalid SQL: {err}",
+                execution_time=round(time.perf_counter() - t0, 3),
+            )
+
+        resp = _execute_with_self_correction(
+            sql, req.query, active, gemini_result, t0
+        )
+
+        if resp.success and not skip_cache:
+            _put_cache(cache_key, resp)
+
+        elapsed = round(time.perf_counter() - t0, 3)
+        logger.info(f"Query done in {elapsed}s — {len(resp.data)} rows")
+        return resp
 
     except Exception as e:
         traceback.print_exc()
+        logger.error(f"Query failed: {e}")
         return QueryResponse(
-            success=False,
-            query=req.query,
-            error=str(e),
+            success=False, query=req.query, error=str(e),
             execution_time=round(time.perf_counter() - t0, 3),
         )
 
 
+# ── schema / suggestions ─────────────────────────────────────────────────
 @router.get("/schema", response_model=SchemaResponse)
 def schema_info():
     info = get_schema()
@@ -149,51 +384,160 @@ def schema_info():
 @router.get("/suggestions", response_model=SuggestionResponse)
 def suggestions():
     items = [
-        {
-            "query": "Show me the total views by category",
-            "difficulty": "Simple",
-            "description": "Bar chart showing aggregated views per video category",
-        },
-        {
-            "query": "Compare average likes, comments, and shares for monetized vs non-monetized videos across regions",
-            "difficulty": "Medium",
-            "description": "Grouped bar chart with multiple engagement metrics",
-        },
-        {
-            "query": "Show me the monthly trend of average sentiment score for the top 3 categories by views in 2025, and highlight which months had negative sentiment",
-            "difficulty": "Complex",
-            "description": "Multi-line time series chart with annotations",
-        },
-        {
-            "query": "What is the distribution of videos across languages?",
-            "difficulty": "Simple",
-            "description": "Pie chart of video count by language",
-        },
-        {
-            "query": "Which region has the highest engagement rate?",
-            "difficulty": "Medium",
-            "description": "Engagement rate = (likes+comments+shares)/views",
-        },
-        {
-            "query": "Show monthly video publish trends by category for 2024",
-            "difficulty": "Medium",
-            "description": "Multi-line time series chart",
-        },
+        {"query": "Show me the total views by category", "difficulty": "Simple",
+         "description": "Bar chart of aggregated views per category"},
+        {"query": "Compare average likes, comments, and shares for monetized vs non-monetized videos across regions",
+         "difficulty": "Medium",
+         "description": "Grouped bar chart with multiple engagement metrics"},
+        {"query": "Show me the monthly trend of average sentiment score for the top 3 categories by views in 2025",
+         "difficulty": "Complex",
+         "description": "Multi-line time series chart with annotations"},
+        {"query": "What is the distribution of videos across languages?",
+         "difficulty": "Simple",
+         "description": "Pie chart of video count by language"},
+        {"query": "Which region has the highest engagement rate?",
+         "difficulty": "Medium",
+         "description": "Engagement = (likes+comments+shares)/views"},
+        {"query": "Show monthly video publish trends by category for 2024",
+         "difficulty": "Medium",
+         "description": "Multi-line time series chart"},
     ]
     return SuggestionResponse(suggestions=items)
 
 
-@router.post("/upload")
+# ── table management ──────────────────────────────────────────────────────
+@router.get("/tables", response_model=TablesResponse)
+def list_tables():
+    global _active_table
+    info = get_schema()
+    tables = [
+        TableInfo(
+            name=t["name"], row_count=t["row_count"],
+            column_count=len(t["columns"]), columns=t["columns"],
+            is_active=(t["name"] == _active_table),
+        )
+        for t in info["tables"]
+    ]
+    return TablesResponse(tables=tables, active_table=_active_table)
+
+
+@router.post("/active-table")
+def set_active_table(body: ActiveTableRequest):
+    global _active_table
+    if not table_exists(body.table_name):
+        raise HTTPException(404, f"Table '{body.table_name}' does not exist")
+    _active_table = body.table_name
+    logger.info(f"Active table → {_active_table}")
+    return {
+        "success": True,
+        "active_table": _active_table,
+        "timestamp": datetime.utcnow().isoformat(),
+    }
+
+
+@router.delete("/tables/{table_name}")
+def delete_table_endpoint(table_name: str):
+    global _active_table
+    if table_name == "youtube_data":
+        raise HTTPException(400, "Cannot delete the default youtube_data table")
+    if not table_exists(table_name):
+        raise HTTPException(404, f"Table '{table_name}' does not exist")
+    drop_table(table_name)
+    if _active_table == table_name:
+        _active_table = settings.DEFAULT_TABLE
+    info = get_schema()
+    tables = [
+        TableInfo(
+            name=t["name"], row_count=t["row_count"],
+            column_count=len(t["columns"]), columns=t["columns"],
+            is_active=(t["name"] == _active_table),
+        )
+        for t in info["tables"]
+    ]
+    return TablesResponse(tables=tables, active_table=_active_table)
+
+
+# ── upload with auto-profiling (UPDATE 9) ─────────────────────────────────
+@router.post("/upload", response_model=UploadResponse)
+@limiter.limit(settings.UPLOAD_RATE_LIMIT)
 async def upload_csv(
+    request: Request,
     file: UploadFile = File(...),
     table_name: str = Form("custom_data"),
 ):
-    upload_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data", "uploads")
-    os.makedirs(upload_dir, exist_ok=True)
-    filepath = os.path.join(upload_dir, file.filename)
+    global _active_table
+    filename = file.filename or ""
+    if not filename.lower().endswith(".csv"):
+        return UploadResponse(
+            success=False,
+            error=f"Invalid file type. Only .csv allowed. Got: '{filename}'",
+        )
+    content = await file.read()
+    if len(content) > settings.MAX_UPLOAD_SIZE:
+        return UploadResponse(
+            success=False,
+            error=f"File too large ({len(content)/(1024*1024):.1f}MB). Max {settings.MAX_UPLOAD_SIZE//(1024*1024)}MB.",
+        )
+    if len(content) == 0:
+        return UploadResponse(success=False, error="File is empty.")
+
+    os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
+    filepath = os.path.join(settings.UPLOAD_DIR, filename)
     with open(filepath, "wb") as f:
-        content = await file.read()
         f.write(content)
-    safe_table = table_name.replace(".csv", "").replace(" ", "_")
-    schema = load_csv_to_db(filepath, safe_table)
-    return {"success": True, "schema": schema, "table_name": safe_table}
+
+    safe_table = table_name.replace(".csv", "").replace(" ", "_")[:64]
+    try:
+        schema = load_csv_to_db(filepath, safe_table)
+        _active_table = safe_table
+
+        # Auto-profiling
+        prof = profile_table(safe_table)
+        starter_qs = generate_starter_questions(prof)
+
+        return UploadResponse(
+            success=True,
+            table_name=safe_table,
+            schema_info=schema,
+            suggested_questions=starter_qs,
+        )
+    except Exception as e:
+        logger.error(f"Upload failed: {e}")
+        return UploadResponse(success=False, error=str(e))
+
+
+@router.post("/upload/preview", response_model=UploadPreviewResponse)
+@limiter.limit(settings.UPLOAD_RATE_LIMIT)
+async def upload_preview_endpoint(
+    request: Request, file: UploadFile = File(...)
+):
+    filename = file.filename or ""
+    if not filename.lower().endswith(".csv"):
+        return UploadPreviewResponse(
+            success=False, error="Invalid file type. Only .csv allowed."
+        )
+    content = await file.read()
+    if len(content) > settings.MAX_UPLOAD_SIZE:
+        return UploadPreviewResponse(
+            success=False,
+            error=f"File too large ({len(content)/(1024*1024):.1f}MB).",
+        )
+    os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
+    tmp_path = os.path.join(settings.UPLOAD_DIR, f"_preview_{filename}")
+    with open(tmp_path, "wb") as f:
+        f.write(content)
+    try:
+        info = preview_csv(tmp_path)
+        return UploadPreviewResponse(
+            success=True, file_name=filename, file_size=len(content),
+            row_count=info["row_count"], columns=info["columns"],
+            sample_rows=info["sample_rows"],
+        )
+    except Exception as e:
+        logger.error(f"Preview failed: {e}")
+        return UploadPreviewResponse(success=False, error=str(e))
+    finally:
+        try:
+            os.remove(tmp_path)
+        except Exception:
+            pass
