@@ -36,7 +36,7 @@ import type {
 /* ══════════════════════════════════════════════════════════════════ */
 /* SAMPLE DATA URL — UPDATE THIS WITH YOUR GITHUB RAW CSV LINK      */
 /* ══════════════════════════════════════════════════════════════════ */
-const SAMPLE_DATA_URL = "https://raw.githubusercontent.com/YOUR_USERNAME/YOUR_REPO/main/sample_data.csv";
+const SAMPLE_DATA_URL = "https://raw.githubusercontent.com/pabitra27706-oss/matriq/main/sample_data.csv";
 
 /* ══════════════════════════════════════════════════════════════════ */
 /* CHART TYPES                                                       */
@@ -396,7 +396,7 @@ function WelcomeUploadModal({
   const [dragOver, setDragOver] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
-  const MAX_SIZE = 50 * 1024 * 1024;
+  const MAX_SIZE = 100 * 1024 * 1024;
 
   const handleSelectFile = async (f: File) => {
     setError("");
@@ -406,7 +406,7 @@ function WelcomeUploadModal({
       return;
     }
     if (f.size > MAX_SIZE) {
-      setError("File too large. Maximum size is 50 MB.");
+      setError("File too large. Maximum size is 100 MB.");
       return;
     }
     setFile(f);
@@ -510,10 +510,8 @@ function WelcomeUploadModal({
   return (
     <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/50 dark:bg-black/70 backdrop-blur-lg animate-[fade-in_0.3s]">
       <div className="relative w-full max-w-2xl mx-4 max-h-[92vh] overflow-y-auto glass-card rounded-2xl shadow-2xl animate-[scale-in_0.35s] border border-[var(--color-border)]">
-        {/* Top glow line */}
         <div className="absolute inset-x-0 top-0 h-[2px] bg-gradient-to-r from-transparent via-[#22c55e]/60 to-transparent rounded-t-2xl" />
 
-        {/* Skip / Close button */}
         <button
           type="button"
           onClick={onSkip}
@@ -527,7 +525,6 @@ function WelcomeUploadModal({
         </button>
 
         <div className="p-8 pt-10">
-          {/* Header */}
           <div className="text-center mb-8">
             <div className="mb-5 mx-auto animate-[scale-in_0.5s]">
               <div className="w-16 h-16 mx-auto rounded-2xl bg-gradient-to-br from-[#22c55e] to-[#15803d] flex items-center justify-center shadow-xl shadow-[#22c55e]/20 animate-[glow-pulse_4s_infinite]">
@@ -544,7 +541,6 @@ function WelcomeUploadModal({
             </p>
           </div>
 
-          {/* Done state */}
           {done && (
             <div className="text-center py-12 animate-[scale-in_0.3s]">
               <div className="w-16 h-16 mx-auto mb-4 rounded-full bg-[#22c55e]/10 flex items-center justify-center">
@@ -557,10 +553,8 @@ function WelcomeUploadModal({
             </div>
           )}
 
-          {/* Upload area */}
           {!file && !loadingPreview && !done && !loadingSample && (
             <div className="space-y-5">
-              {/* Drop zone */}
               <div
                 onClick={() => fileRef.current?.click()}
                 onDrop={handleDrop}
@@ -593,14 +587,12 @@ function WelcomeUploadModal({
                 </p>
               </div>
 
-              {/* Divider */}
               <div className="flex items-center gap-4">
                 <div className="flex-1 h-px bg-[var(--color-border)]" />
                 <span className="text-[10px] font-semibold text-[var(--color-muted)] uppercase tracking-widest">or</span>
                 <div className="flex-1 h-px bg-[var(--color-border)]" />
               </div>
 
-              {/* Sample data button */}
               <button
                 type="button"
                 onClick={handleLoadSample}
@@ -624,7 +616,6 @@ function WelcomeUploadModal({
                 </svg>
               </button>
 
-              {/* Info badges */}
               <div className="flex items-center justify-center gap-3 flex-wrap pt-2">
                 <span className="badge badge-green py-1 px-3 text-[10px]">
                   <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
@@ -648,7 +639,6 @@ function WelcomeUploadModal({
             </div>
           )}
 
-          {/* Loading preview spinner */}
           {loadingPreview && (
             <div className="flex flex-col items-center py-16 animate-[fade-in_0.3s]">
               <div className="w-10 h-10 border-[3px] border-transparent border-t-[#22c55e] rounded-full animate-spin mb-4" />
@@ -656,7 +646,6 @@ function WelcomeUploadModal({
             </div>
           )}
 
-          {/* Loading sample spinner */}
           {loadingSample && !done && (
             <div className="flex flex-col items-center py-16 animate-[fade-in_0.3s]">
               <div className="w-10 h-10 border-[3px] border-transparent border-t-[#3b82f6] rounded-full animate-spin mb-4" />
@@ -675,10 +664,8 @@ function WelcomeUploadModal({
             </div>
           )}
 
-          {/* File preview + confirm upload */}
           {preview && !done && (
             <div className="space-y-5 animate-[fade-in-up_0.3s]">
-              {/* File info card */}
               <div className="glass-subtle rounded-xl p-4">
                 <div className="flex items-center justify-between mb-2">
                   <div className="flex items-center gap-2.5">
@@ -704,7 +691,6 @@ function WelcomeUploadModal({
                 </div>
               </div>
 
-              {/* Columns */}
               <div>
                 <p className="text-xs font-semibold text-[var(--color-muted-foreground)] mb-2">Columns detected:</p>
                 <div className="flex flex-wrap gap-1.5">
@@ -720,7 +706,6 @@ function WelcomeUploadModal({
                 </div>
               </div>
 
-              {/* Sample rows */}
               {preview.sample_rows.length > 0 && (
                 <div>
                   <p className="text-xs font-semibold text-[var(--color-muted-foreground)] mb-2">
@@ -762,7 +747,6 @@ function WelcomeUploadModal({
                 </div>
               )}
 
-              {/* Upload progress */}
               {uploading && (
                 <div className="animate-[fade-in_0.2s]">
                   <div className="flex justify-between text-[10px] text-[var(--color-muted-foreground)] mb-1">
@@ -778,7 +762,6 @@ function WelcomeUploadModal({
                 </div>
               )}
 
-              {/* Actions */}
               <div className="flex gap-3 pt-1">
                 <button
                   type="button"
@@ -815,7 +798,6 @@ function WelcomeUploadModal({
             </div>
           )}
 
-          {/* Error */}
           {error && (
             <div className="mt-4 flex items-start gap-2.5 text-xs text-[var(--color-destructive)] bg-[var(--color-destructive)]/5 rounded-xl px-4 py-3 border border-[var(--color-destructive)]/10 animate-[fade-in_0.3s]">
               <svg className="w-4 h-4 flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
@@ -831,7 +813,6 @@ function WelcomeUploadModal({
           <input ref={fileRef} type="file" accept=".csv" className="hidden" onChange={handleFileInput} />
         </div>
 
-        {/* Bottom skip bar */}
         {!done && !preview && !loadingPreview && !loadingSample && (
           <div className="px-8 pb-6">
             <div className="flex items-center justify-center gap-2 pt-4 border-t border-[var(--color-border)]">
@@ -1138,15 +1119,16 @@ function DashboardInner() {
   useEffect(() => {
     fetchSuggestions().then(setSuggestions).catch(console.error);
     fetchSchema().then(setSchema).catch(console.error);
-    loadTables();
+    loadTables(true);
   }, []);
 
-  const loadTables = async () => {
+  // Always show welcome popup on every page load/refresh
+  const loadTables = async (isInitialLoad = false) => {
     try {
       const r = await fetchTables();
       setTableList(r.tables);
       setActiveTable(r.active_table);
-      if (r.tables.length === 0) {
+      if (isInitialLoad) {
         setShowWelcomeUpload(true);
       }
     } catch (e) {
@@ -1155,25 +1137,29 @@ function DashboardInner() {
     }
   };
 
-  /* ══════════════════════════════════════════════════════════════ */
-  /* CHANGED: Load history from localStorage BUT always start     */
-  /* with a fresh new chat — don't restore last active conv       */
-  /* ══════════════════════════════════════════════════════════════ */
+  // Load history but ALWAYS start with fresh new chat
   useEffect(() => {
     try {
       const raw = localStorage.getItem("bi-conversations");
       if (raw) {
         const parsed: Conversation[] = JSON.parse(raw);
-        setConversations(parsed);
+        const withMessages = parsed.filter((c) => c.messages.length > 0);
+        const freshConv = createConversation();
+        setConversations([freshConv, ...withMessages]);
+        setActiveConvId(freshConv.id);
+        prevMsgCount.current = 0;
+      } else {
+        const freshConv = createConversation();
+        setConversations([freshConv]);
+        setActiveConvId(freshConv.id);
+        prevMsgCount.current = 0;
       }
     } catch {
-      // silently fail
+      const freshConv = createConversation();
+      setConversations([freshConv]);
+      setActiveConvId(freshConv.id);
+      prevMsgCount.current = 0;
     }
-    // ALWAYS create a fresh new conversation on app load
-    const freshConv = createConversation();
-    setConversations((prev) => [freshConv, ...prev.filter((c) => c.messages.length > 0)]);
-    setActiveConvId(freshConv.id);
-    prevMsgCount.current = 0;
   }, []);
 
   // LocalStorage save
@@ -1402,7 +1388,6 @@ function DashboardInner() {
   /* ══════════════════════════════════════════════════════════════ */
   return (
     <div className="flex h-screen overflow-hidden noise-bg">
-      {/* Welcome Upload Modal */}
       {showWelcomeUpload && (
         <WelcomeUploadModal
           onUploadDone={handleWelcomeUploadDone}
@@ -1410,7 +1395,6 @@ function DashboardInner() {
         />
       )}
 
-      {/* Sidebar */}
       {sidebarOpen && (
         <aside className="w-[260px] flex-shrink-0 border-r border-[var(--color-border)] bg-[var(--color-surface-1)] overflow-hidden animate-[slide-in-left_0.3s] print-hidden">
           <QueryHistory
@@ -1427,7 +1411,6 @@ function DashboardInner() {
       )}
 
       <main className="flex-1 flex flex-col min-w-0 overflow-hidden relative z-10">
-        {/* Header */}
         <header className="flex items-center justify-between px-5 py-2.5 glass-header z-20 print-hidden">
           <div className="flex items-center gap-2.5">
             <button
@@ -1450,7 +1433,6 @@ function DashboardInner() {
               </svg>
               New
             </button>
-            {/* Brand */}
             <div className="hidden sm:flex items-center gap-2.5 ml-1">
               <img src="/logo.png" alt="MATRIQ" className="w-8 h-8 rounded-lg object-contain" />
               <div>
@@ -1488,10 +1470,8 @@ function DashboardInner() {
           </div>
         </header>
 
-        {/* Chat area */}
         <div className="flex-1 overflow-y-auto">
           <div className="max-w-4xl mx-auto px-6 py-6 space-y-8">
-            {/* Welcome */}
             {messages.length === 0 && !loading && (
               <div className="relative flex flex-col items-center justify-center py-24 text-center animate-[fade-in_0.5s] overflow-hidden">
                 <div className="absolute inset-0 pointer-events-none overflow-hidden">
@@ -1519,7 +1499,6 @@ function DashboardInner() {
                     )}
                   </p>
 
-                  {/* Show upload prompt when no tables */}
                   {tableList.length === 0 && (
                     <div
                       className="mb-10 flex flex-col items-center gap-3"
@@ -1625,7 +1604,6 @@ function DashboardInner() {
               </div>
             )}
 
-            {/* Messages */}
             {messages.map((msg) => {
               if (msg.role === "user") {
                 return (
@@ -1669,7 +1647,6 @@ function DashboardInner() {
           </div>
         </div>
 
-        {/* Input */}
         <div className="glass-header px-6 py-3 print-hidden">
           <ChatInput
             onSubmit={handleSubmit}
