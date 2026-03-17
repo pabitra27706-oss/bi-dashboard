@@ -34,7 +34,7 @@ import type {
 } from "@/types";
 
 /* ══════════════════════════════════════════════════════════════════ */
-/* SAMPLE DATA URL — UPDATE THIS WITH YOUR GITHUB RAW CSV LINK      */
+/* SAMPLE DATA URL                                                   */
 /* ══════════════════════════════════════════════════════════════════ */
 const SAMPLE_DATA_URL = "https://raw.githubusercontent.com/pabitra27706-oss/matriq/main/sample_data.csv";
 
@@ -396,7 +396,7 @@ function WelcomeUploadModal({
   const [dragOver, setDragOver] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
-  const MAX_SIZE = 100 * 1024 * 1024;
+  const MAX_SIZE = 50 * 1024 * 1024;
 
   const handleSelectFile = async (f: File) => {
     setError("");
@@ -406,7 +406,7 @@ function WelcomeUploadModal({
       return;
     }
     if (f.size > MAX_SIZE) {
-      setError("File too large. Maximum size is 100 MB.");
+      setError("File too large. Maximum size is 50 MB.");
       return;
     }
     setFile(f);
@@ -470,9 +470,39 @@ function WelcomeUploadModal({
     setError("");
     setProgress(0);
     try {
-      const response = await fetch(SAMPLE_DATA_URL);
-      if (!response.ok) throw new Error("Failed to fetch sample data from GitHub");
-      const blob = await response.blob();
+      // Try fetching from GitHub raw URL first
+      let blob: Blob | null = null;
+      try {
+        const response = await fetch(SAMPLE_DATA_URL, {
+          mode: "cors",
+          cache: "no-cache",
+        });
+        if (response.ok) {
+          blob = await response.blob();
+        }
+      } catch {
+        // GitHub fetch failed (CORS or network), try local fallback
+        console.warn("GitHub fetch failed, trying local fallback...");
+      }
+
+      // Fallback: try loading from local public folder
+      if (!blob) {
+        try {
+          const localResponse = await fetch("/sample_data.csv");
+          if (localResponse.ok) {
+            blob = await localResponse.blob();
+          }
+        } catch {
+          console.warn("Local fallback also failed");
+        }
+      }
+
+      if (!blob) {
+        throw new Error(
+          "Could not load sample data. Please download it manually from GitHub and upload it using the file picker above."
+        );
+      }
+
       const sampleFile = new File([blob], "sample_data.csv", { type: "text/csv" });
       const r = await uploadCSV(sampleFile, "sample_data", (p: number) => setProgress(p));
       if (r.success) {
@@ -485,7 +515,7 @@ function WelcomeUploadModal({
       setError(
         err instanceof Error
           ? err.message
-          : "Failed to load sample data. You can download it manually from GitHub."
+          : "Failed to load sample data. Please download it manually from GitHub and upload it."
       );
     } finally {
       setLoadingSample(false);
@@ -608,7 +638,7 @@ function WelcomeUploadModal({
                     Try with Sample Data
                   </p>
                   <p className="text-[10px] text-[var(--color-muted)] mt-0.5">
-                    Load a small demo dataset from GitHub to explore features
+                    Load a small demo dataset to explore features
                   </p>
                 </div>
                 <svg className="w-4 h-4 text-[var(--color-muted)] group-hover/sample:text-[#22c55e] transition-colors ml-auto flex-shrink-0" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
@@ -649,7 +679,7 @@ function WelcomeUploadModal({
           {loadingSample && !done && (
             <div className="flex flex-col items-center py-16 animate-[fade-in_0.3s]">
               <div className="w-10 h-10 border-[3px] border-transparent border-t-[#3b82f6] rounded-full animate-spin mb-4" />
-              <p className="text-xs text-[var(--color-muted-foreground)]">Loading sample data from GitHub&hellip;</p>
+              <p className="text-xs text-[var(--color-muted-foreground)]">Loading sample data&hellip;</p>
               {progress > 0 && (
                 <div className="w-48 mt-3">
                   <div className="w-full h-1.5 bg-[var(--color-surface-3)] rounded-full overflow-hidden">
@@ -1383,9 +1413,6 @@ function DashboardInner() {
 
   const activeTableInfo = tableList.find((t) => t.name === activeTable);
 
-  /* ══════════════════════════════════════════════════════════════ */
-  /* RENDER                                                        */
-  /* ══════════════════════════════════════════════════════════════ */
   return (
     <div className="flex h-screen overflow-hidden noise-bg">
       {showWelcomeUpload && (
